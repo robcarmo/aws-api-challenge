@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: VPC Management API - Creates and manages VPCs with subnets
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    MemorySize: 256
+    Environment:
+      Variables:
+        DYNAMODB_TABLE: !Ref VpcTable
+        LOG_LEVEL: INFO
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  ApiKeyValue:
+    Type: String
+    NoEcho: true
+    Description: API Key for authentication
+    MinLength: 20
+
+Resources:
+  VpcApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub vpc-api-${Environment}
+      StageName: !Ref Environment
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub vpc-api-usage-plan-${Environment}
+          Throttle:
+            BurstLimit: 100
+            RateLimit: 50
+          Quota:
+            Limit: 1000
+            Period: DAY
+      Cors:
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: VpcApiStage
+    Properties:
+      Name: !Sub vpc-api-key-${Environment}
+      Enabled: true
+      Value: !Ref ApiKeyValue
+      StageKeys:
+        - RestApiId: !Ref VpcApi
+          StageName: !Ref Environment
+
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref VpcApiUsagePlan
+
+  VpcTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub vpc-api-resources-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: vpc-api
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub vpc-api-lambda-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource: !GetAtt VpcTable.Arn
+        - PolicyName: EC2VpcAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateVpc
+                  - ec2:DeleteVpc
+                  - ec2:DescribeVpcs
+                  - ec2:ModifyVpcAttribute
+                  - ec2:CreateTags
+                  - ec2:CreateSubnet
+                  - ec2:DeleteSubnet
+                  - ec2:DescribeSubnets
+                  - ec2:ModifySubnetAttribute
+                  - ec2:DescribeInternetGateways
+                  - ec2:DetachInternetGateway
+                  - ec2:DeleteInternetGateway
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+
+  CreateVpcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub vpc-api-create-${Environment}
+      CodeUri: src/
+      Handler: app.handlers.vpc_handler.create_vpc
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        CreateVpc:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpcs
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+
+  GetVpcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub vpc-api-get-${Environment}
+      CodeUri: src/
+      Handler: app.handlers.vpc_handler.get_vpc
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        GetVpc:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpcs/{vpc_id}
+            Method: GET
+            Auth:
+              ApiKeyRequired: true
+
+  ListVpcsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub vpc-api-list-${Environment}
+      CodeUri: src/
+      Handler: app.handlers.vpc_handler.list_vpcs
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ListVpcs:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpcs
+            Method: GET
+            Auth:
+              ApiKeyRequired: true
+
+  DeleteVpcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub vpc-api-delete-${Environment}
+      CodeUri: src/
+      Handler: app.handlers.vpc_handler.delete_vpc
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        DeleteVpc:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpcs/{vpc_id}
+            Method: DELETE
+            Auth:
+              ApiKeyRequired: true
+
+  HealthCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub vpc-api-health-${Environment}
+      CodeUri: src/
+      Handler: app.handlers.vpc_handler.health_check
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /health
+            Method: GET
+            Auth:
+              ApiKeyRequired: false
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${VpcApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+  ApiKeyId:
+    Description: API Key ID (retrieve value from AWS Console)
+    Value: !Ref ApiKey
+  DynamoDBTable:
+    Description: DynamoDB table name
+    Value: !Ref VpcTable
