@@ -29,7 +29,7 @@ AWS serverless API for creating and managing VPCs with subnets.
 ## Prerequisites
 
 - AWS CLI configured with appropriate credentials
-- AWS SAM CLI installed
+- AWS SAM CLI installed (`brew install aws-sam-cli` on macOS)
 - Python 3.11+
 
 ## Deployment
@@ -37,41 +37,55 @@ AWS serverless API for creating and managing VPCs with subnets.
 ```bash
 cd aws-api-challenge
 
-# Build
+# Build the application
 sam build
 
 # Deploy (first time - guided)
-sam deploy --guided
-
-# Deploy (subsequent)
-sam deploy --parameter-overrides ApiKeyValue=your-api-key-min-20-chars
+sam deploy --guided --capabilities CAPABILITY_NAMED_IAM
 ```
 
 During guided deployment, you'll be prompted for:
-- **Stack Name**: e.g., `vpc-api-dev`
+- **Stack Name**: e.g., `vpc-management-api`
 - **AWS Region**: e.g., `us-east-1`
 - **Environment**: `dev`, `staging`, or `prod`
-- **ApiKeyValue**: Your API key (minimum 20 characters)
+- **ApiKeyValue**: Your API key (**minimum 20 characters**, e.g., `my-secure-api-key-12345678`)
+
+For subsequent deployments:
+```bash
+sam deploy --parameter-overrides "Environment=dev ApiKeyValue=my-secure-api-key-12345678" --capabilities CAPABILITY_NAMED_IAM
+```
+
+After deployment, note the outputs:
+- **ApiEndpoint**: Your API URL (e.g., `https://abc123.execute-api.us-east-1.amazonaws.com/dev`)
+- **ApiKeyId**: The API Key ID for reference
 
 ## Authentication
 
-The API uses API Gateway API Keys for authentication. After deployment:
+All endpoints except `/health` require API Key authentication.
 
-1. Get the API endpoint from CloudFormation outputs
-2. Use the API key you provided during deployment
-3. Include the key in requests via `x-api-key` header
+Include the API key in requests via the `x-api-key` header:
+```bash
+-H "x-api-key: my-secure-api-key-12345678"
+```
 
 ## API Endpoints
 
-### Health Check
+Replace `{api-endpoint}` with your deployed API URL (e.g., `https://abc123.execute-api.us-east-1.amazonaws.com/dev`).
+
+### Health Check (No Auth Required)
 ```bash
-curl https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/health
+curl https://{api-endpoint}/health
+```
+
+**Response:**
+```json
+{"status": "healthy", "timestamp": "2025-12-14T15:59:12.779117"}
 ```
 
 ### Create VPC
 ```bash
-curl -X POST https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs \
-  -H "x-api-key: your-api-key" \
+curl -X POST https://{api-endpoint}/vpcs \
+  -H "x-api-key: my-secure-api-key-12345678" \
   -H "Content-Type: application/json" \
   -d '{
     "cidr_block": "10.0.0.0/16",
@@ -113,36 +127,44 @@ curl -X POST https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs \
       "map_public_ip_on_launch": true
     }
   ],
-  "created_at": "2024-01-15T10:30:00.000000"
+  "created_at": "2025-12-14T15:59:41.595909"
 }
 ```
 
 ### List VPCs
 ```bash
-curl https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs \
-  -H "x-api-key: your-api-key"
+curl https://{api-endpoint}/vpcs \
+  -H "x-api-key: my-secure-api-key-12345678"
+```
+
+**Response:**
+```json
+{
+  "vpcs": [...],
+  "count": 1
+}
 ```
 
 ### Get VPC Details
 ```bash
-curl https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs/{vpc_id} \
-  -H "x-api-key: your-api-key"
+curl https://{api-endpoint}/vpcs/{vpc_id} \
+  -H "x-api-key: my-secure-api-key-12345678"
 
 # Include live AWS data
-curl "https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs/{vpc_id}?include_live=true" \
-  -H "x-api-key: your-api-key"
+curl "https://{api-endpoint}/vpcs/{vpc_id}?include_live=true" \
+  -H "x-api-key: my-secure-api-key-12345678"
 ```
 
 ### Delete VPC
 ```bash
-curl -X DELETE https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/vpcs/{vpc_id} \
-  -H "x-api-key: your-api-key"
+curl -X DELETE https://{api-endpoint}/vpcs/{vpc_id} \
+  -H "x-api-key: my-secure-api-key-12345678"
 ```
 
 ## Running Tests
 
 ```bash
-pip install pytest pytest-mock
+pip install -r requirements.txt
 pytest tests/ -v
 ```
 
@@ -152,33 +174,37 @@ pytest tests/ -v
 aws-api-challenge/
 ├── src/
 │   ├── app/
-│   │   ├── handlers/       # Lambda handlers
-│   │   │   ├── vpc_handler.py
-│   │   │   └── utils.py
-│   │   ├── services/       # Business logic
+│   │   ├── handlers/          # Lambda handlers
+│   │   │   └── vpc_handler.py
+│   │   ├── services/          # Business logic
 │   │   │   ├── vpc_service.py
 │   │   │   └── dynamodb_service.py
-│   │   └── models/         # Data models
+│   │   └── models/            # Data models
 │   │       └── vpc.py
-│   └── __init__.py
+│   └── requirements.txt       # Lambda dependencies
 ├── tests/
 │   └── unit/
 │       └── test_vpc_handler.py
-├── template.yaml           # SAM template
-├── requirements.txt
+├── template.yaml              # SAM template
+├── requirements.txt           # Dev dependencies
 └── README.md
 ```
 
 ## Cleanup
 
+1. First, delete any VPCs created via the API:
 ```bash
-sam delete --stack-name vpc-api-dev
+curl -X DELETE https://{api-endpoint}/vpcs/{vpc_id} \
+  -H "x-api-key: my-secure-api-key-12345678"
 ```
 
-**Note:** Delete any VPCs created via the API before deleting the stack, or manually delete them from the AWS Console.
+2. Then delete the CloudFormation stack:
+```bash
+sam delete --stack-name {your-stack-name}
+```
 
-## Limitations
+## Notes
 
-- VPCs created are not automatically deleted when the stack is deleted
-- No pagination on list endpoint (suitable for small datasets)
 - API key must be at least 20 characters
+- VPCs created via the API are real AWS resources and will incur costs if not deleted
+- The `--capabilities CAPABILITY_NAMED_IAM` flag is required for deployment
